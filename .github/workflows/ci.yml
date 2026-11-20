@@ -1,9 +1,15 @@
 name: ci
 
+# Push to main: test, build the image, then promote the commit to the live
+# branch, which the hourly check runs. A commit that fails here never runs.
 on:
   push:
     branches: [main]
   pull_request:
+  # Weekly: new vulnerabilities in Go or the tools appear without a commit.
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,8 +17,11 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -24,4 +33,50 @@ jobs:
 
       - run: go vet ./...
 
+      # Tool versions are pinned, with checksums, in tools/go.mod.
+      - run: go tool -modfile=tools/go.mod staticcheck ./...
+
       - run: go test -race ./...
+
+      - run: go tool -modfile=tools/go.mod govulncheck ./...
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: docker build -t message-me-cve .
+
+      # Runs the image as compose does. NVD is marked as just polled, so the
+      # run reads only KEV: it proves the static binary starts on scratch,
+      # TLS works with the copied CA bundle, and UID 1000 reads the mounts.
+      - name: Smoke test
+        run: |
+          mkdir -p smoke/profiles smoke/state
+          echo openssl > smoke/profiles/smoke.txt
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          printf '{"nvd_cursor":"%s","nvd_polled":"%s"}\n' "$now" "$now" > smoke/state/state.json
+          docker run --rm \
+            -v "$PWD/smoke/profiles:/data/profiles:ro" \
+            -v "$PWD/smoke/state:/data/state:ro" \
+            message-me-cve -dry-run
+
+  promote:
+    needs: [test, image]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # push the live branch
+    # Promotions in push order. A plain push is fast-forward only, so an
+    # older commit that finishes CI late cannot roll live back.
+    concurrency:
+      group: promote
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - run: git push origin HEAD:refs/heads/live

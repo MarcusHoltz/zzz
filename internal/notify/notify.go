@@ -81,11 +81,23 @@ func (t *Telegram) Send(ctx context.Context, m Message) error {
 	return err
 }
 
+// Ping requests u, the URL of a dead man's switch (healthchecks.io, Uptime
+// Kuma push monitor). The monitor alerts when pings stop, which covers the
+// one failure a run cannot report: not running at all.
+func Ping(ctx context.Context, c *http.Client, u string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return errors.New("cannot build request") // the URL is a secret
+	}
+	req.Header.Set("User-Agent", userAgent)
+	return do(c, req)
+}
+
 func do(c *http.Client, req *http.Request) error {
 	resp, err := c.Do(req)
 	if err != nil {
-		// url.Error prints the URL, which is a secret for both channels:
-		// the ntfy topic and the Telegram bot token.
+		// url.Error prints the URL, which is a secret for every caller:
+		// the ntfy topic, the Telegram bot token, the heartbeat URL.
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			return ue.Err

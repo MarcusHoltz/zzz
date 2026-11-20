@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # push state to the state branch
+  contents: write # push state to the state branch, in the last step only
 
 # One run at a time: the state branch has a single writer.
 concurrency:
@@ -21,14 +21,21 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 80 # one 60-minute round of NVD retries, plus margin
+    # persist-credentials: false keeps the write token off disk while the
+    # check parses third-party feed data; only Save state gets it.
     steps:
+      # The code CI promoted, not main: a commit that failed CI never runs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: live
+          persist-credentials: false
 
       - name: Check out state
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: state
           path: state
+          persist-credentials: false
 
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
@@ -41,16 +48,19 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+          HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}
         run: go run ./cmd/message-me-cve -profiles profiles -state state/state.json
 
       # Also after a failed check: alerts it delivered must stay marked sent.
       - name: Save state
         if: always()
         working-directory: state
+        env:
+          TOKEN: ${{ github.token }}
         run: |
           git config user.name message-me-cve
           git config user.email message-me-cve@users.noreply.github.com
           git add state.json
           git diff --cached --quiet && exit 0
           git commit -q -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push -q
+          git push -q "https://x-access-token:$TOKEN@github.com/$GITHUB_REPOSITORY.git" HEAD:state

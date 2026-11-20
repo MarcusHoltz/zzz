@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Workflow actions, pinned by SHA with a version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Dockerfile base image, pinned by digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # staticcheck and govulncheck.
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    groups:
+      tools:
+        patterns:
+          - "*"

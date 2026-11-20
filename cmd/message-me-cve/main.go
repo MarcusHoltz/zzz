@@ -89,8 +89,10 @@ func run() int {
 	now := time.Now().UTC()
 	res := c.Run(ctx, now, profiles, st)
 
+	saved := !*dryRun
 	if !*dryRun {
 		if err := st.Save(*statePath); err != nil {
+			saved = false
 			res.Problems = append(res.Problems, "cannot save state: "+err.Error())
 			fail(fmt.Errorf("cannot save state: %w", err))
 		}
@@ -102,6 +104,15 @@ func run() int {
 		log.Error("problem", "err", p)
 	}
 	log.Info("run done", "nvd_polled", res.NVDPolled, "messages", len(res.Deliveries), "ok", res.OK())
+	// The heartbeat means: this run finished, and every message reached you.
+	// Problems already messaged do not stop it; silence does.
+	if hb := strings.TrimSpace(os.Getenv("HEARTBEAT_URL")); hb != "" && saved && res.Delivered() {
+		if err := notify.Ping(ctx, &http.Client{Timeout: 30 * time.Second}, hb); err != nil {
+			log.Error("heartbeat failed", "err", err)
+		} else {
+			log.Info("heartbeat sent")
+		}
+	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		reportToGitHub(now, res, log)
 	}

@@ -46,7 +46,7 @@ message-me-cve: NVD OK again
 2. **Settings > Secrets and variables > Actions**: add `NTFY_URL`, or
    `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, or all three. Optional:
    `NVD_API_KEY` ([free](https://nvd.nist.gov/developers/request-an-api-key)),
-   for faster NVD paging.
+   for faster NVD paging; `HEARTBEAT_URL`, see [Heartbeat](#heartbeat).
 3. Create the state branch once:
 
    ```bash
@@ -54,9 +54,11 @@ message-me-cve: NVD OK again
    git push -u origin state && git switch main
    ```
 
-4. Put one watch list per project in `profiles/<name>.txt`. Commit.
-5. **Actions > message-me-cve > Run workflow** to check the setup. After
-   that it runs every hour.
+4. Put one watch list per project in `profiles/<name>.txt`. Commit and
+   push to `main`. CI tests the commit and, if it passes, pushes it to the
+   `live` branch. The hourly check runs `live`.
+5. When CI is green, **Actions > message-me-cve > Run workflow** to check
+   the setup. After that it runs every hour.
 
 Check delivery without waiting for a CVE:
 
@@ -72,6 +74,22 @@ NTFY_URL=https://ntfy.sh/<topic> go run ./cmd/message-me-cve -test-notify
 - **Telegram**: create a bot with [@BotFather](https://t.me/BotFather),
   message it once, then read `message.chat.id` from
   `https://api.telegram.org/bot<token>/getUpdates`.
+
+### Heartbeat
+
+The check cannot tell you that it stopped running, and silence looks the
+same as "no new CVEs". GitHub also disables scheduled workflows in public
+repos after 60 days without repository activity. An outside monitor that
+alerts when pings stop covers this:
+
+- [healthchecks.io](https://healthchecks.io/) (free): create a check with
+  period 1 hour, grace 3 hours (GitHub starts scheduled runs late). Its
+  ping URL is `HEARTBEAT_URL`. Any monitor that waits for an HTTP GET
+  works, for example an Uptime Kuma push monitor.
+- Pinged after a run that saved its state and delivered every message.
+  Problems that were already messaged do not stop it.
+- Stops when: the workflow is disabled or not scheduled, the
+  configuration is broken, or a message cannot reach your phone.
 
 
 ## Watch lists
@@ -94,7 +112,8 @@ apache http server
 
 ## How a run works
 
-1. Read every `profiles/*.txt` and `state.json` from the `state` branch.
+1. Check out `live`, the last commit that passed CI. Read every
+   `profiles/*.txt`, and `state.json` from the `state` branch.
 2. Fetch the KEV catalog (GitHub mirror, then cisa.gov).
 3. If NVD was last polled 2 hours ago or more: fetch every CVE NVD changed
    since the cursor.
@@ -103,7 +122,9 @@ apache http server
 5. Send. Mark each alert sent, per profile, only after every channel
    accepted it.
 6. Move the NVD cursor to now only if everything from NVD was handled.
-7. Commit `state.json` to the `state` branch. Exit 1 if anything is
+7. Ping `HEARTBEAT_URL` if the state was saved and every message was
+   delivered.
+8. Commit `state.json` to the `state` branch. Exit 1 if anything is
    failing.
 
 The run page shows a table per run, every message, and its delivery
@@ -122,6 +143,11 @@ result per channel.
 | Highest CVSS from any source | NVD often scores new CVEs weeks late. The publisher's score (F5 for NGINX, for example) arrives with the CVE. 3.x first, 4.0 if no 3.x. Unscored CVEs wait until a score appears. |
 | State on its own branch | `main` history holds code changes only. One writer (the concurrency group), so no merge conflicts. |
 | One run, then exit | Scheduling belongs to the scheduler (Actions, cron, systemd timer). |
+| The hourly check runs `live`, not `main` | CI pushes a commit to `live` only after gofmt, vet, staticcheck, tests, govulncheck and the image smoke test pass. A broken push to `main` never runs. The push is fast-forward only, so a commit whose CI finishes late cannot roll `live` back. |
+| Heartbeat to an outside monitor | A check that does not run cannot report it. Only something outside GitHub Actions can notice the silence. |
+| Write token only in the push step | Checkouts do not keep credentials. The step that parses third-party feed data has no token on disk. |
+| Pinned, and updated by Dependabot | Actions by commit SHA, the base image by digest, staticcheck and govulncheck in `tools/go.mod` with checksums. Dependabot opens update PRs weekly; CI gates them like any commit. |
+| govulncheck weekly, not only on push | New vulnerabilities in Go appear without a commit. |
 
 
 ## Limitations
@@ -133,6 +159,9 @@ result per channel.
   vendor `python`; write `python python` to mean CPython only.
 - **Latency is the schedule's.** Hourly at best; later when GitHub delays
   scheduled runs.
+- **The workflow file is not gated.** GitHub runs scheduled workflows from
+  the default branch, so a change to `message-me-cve.yml` applies at the
+  next run without CI. Code and watch lists go through `live`.
 
 
 ## Reference
@@ -151,6 +180,7 @@ result per channel.
 | `NTFY_URL` | ntfy topic URL |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram bot and chat, set together |
 | `NVD_API_KEY` | Optional; NVD rate limit 50 instead of 5 requests per 30 s |
+| `HEARTBEAT_URL` | Optional; GET after every fully delivered run, see [Heartbeat](#heartbeat) |
 
 Exit codes: `0` all OK, `1` something is failing (and was messaged), `2`
 bad configuration (nothing ran).
@@ -170,6 +200,7 @@ match is sent again, plus the last 7 days of NVD.
 | `internal/match` | Watch lists and word matching |
 | `internal/notify` | ntfy and Telegram |
 | `internal/state` | State file |
+| `tools` | Pinned staticcheck and govulncheck, run with `go tool -modfile=tools/go.mod` |
 
 ### Run with Docker
 
@@ -190,4 +221,20 @@ image is one static binary on `scratch`, running as UID 1000.
 docker run --rm -v "$PWD":/src -w /src golang:1.27 go test -race ./...
 ```
 
-CI runs gofmt, `go vet` and `go test -race` on every push and PR.
+Linters and vulnerability check, as CI runs them:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src golang:1.27 sh -c \
+  'go tool -modfile=tools/go.mod staticcheck ./... &&
+   go tool -modfile=tools/go.mod govulncheck ./...'
+```
+
+CI (`.github/workflows/ci.yml`), on every push, PR, and weekly:
+
+- `test`: gofmt, `go vet`, staticcheck, `go test -race`, govulncheck.
+- `image`: builds the Dockerfile and runs it once with `-dry-run`.
+- `promote`, pushes to `main` only, after both pass: pushes the commit to
+  `live`.
+
+Roll back by pointing `live` at an older commit:
+`git push -f origin <commit>:live`.

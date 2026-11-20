@@ -90,6 +90,16 @@ type Result struct {
 
 func (r *Result) OK() bool { return len(r.Problems) == 0 }
 
+// Delivered reports whether every message of the run reached every channel.
+func (r *Result) Delivered() bool {
+	for _, d := range r.Deliveries {
+		if !d.OK {
+			return false
+		}
+	}
+	return true
+}
+
 // Run checks every profile once. It updates st; the caller saves it.
 func (c *Checker) Run(ctx context.Context, now time.Time, profiles []Profile, st *state.State) *Result {
 	r := &run{Checker: c, ctx: ctx, now: now, st: st, res: &Result{},

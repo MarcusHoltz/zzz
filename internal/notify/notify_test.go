@@ -79,3 +79,18 @@ func TestNtfy(t *testing.T) {
 		t.Errorf("got title %q priority %q body %q", title, prio, body)
 	}
 }
+
+func TestPing(t *testing.T) {
+	var method string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+	}))
+	defer srv.Close()
+	if err := Ping(context.Background(), srv.Client(), srv.URL); err != nil || method != http.MethodGet {
+		t.Errorf("err %v, method %q", err, method)
+	}
+	err := Ping(context.Background(), http.DefaultClient, "http://127.0.0.1:1/secret-uuid")
+	if err == nil || strings.Contains(err.Error(), "secret-uuid") {
+		t.Errorf("error %q leaks the URL or is nil", err)
+	}
+}

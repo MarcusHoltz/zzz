@@ -105,7 +105,7 @@ func TestKEVSentOnceAcrossProfiles(t *testing.T) {
 	c, s, st := setup(f)
 
 	res := c.Run(context.Background(), now, []Profile{shop, blog}, st)
-	if !res.OK() || len(s.sent) != 2 {
+	if !res.OK() || !res.Delivered() || len(s.sent) != 2 {
 		t.Fatalf("problems %v, sent:\n%s", res.Problems, s.titles())
 	}
 	if want := "[shop, blog] ACT NOW [php]: exploited php CVE-1"; s.sent[0].Title != want || !s.sent[0].Urgent {
@@ -130,7 +130,7 @@ func TestUndeliveredIsRetried(t *testing.T) {
 	c, s, st := setup(f)
 	s.fail = true
 	res := c.Run(context.Background(), now, []Profile{shop}, st)
-	if res.OK() || st.WasSent("shop", "kev:CVE-1") {
+	if res.OK() || res.Delivered() || st.WasSent("shop", "kev:CVE-1") {
 		t.Fatalf("undelivered alert marked sent or run OK: %v", res.Problems)
 	}
 	if !st.NVDCursor.IsZero() {
